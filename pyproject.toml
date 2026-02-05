@@ -8,3 +8,9 @@ dependencies = [
     "foxglove-sdk>=0.17.2",
     "pydantic>=2.12.5",
 ]
+
+[project.scripts]
+foxglove_viz_demo = "main:main"
+
+[tool.uv]
+package = true

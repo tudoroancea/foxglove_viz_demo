@@ -1,9 +1,9 @@
 import argparse
-import base64
 import math
 import random
 import time
-from typing import Any, Dict, List
+from dataclasses import dataclass
+from typing import Any
 
 import foxglove
 import foxglove.schemas as schemas
@@ -16,7 +16,6 @@ from foxglove.channels import (
     SceneUpdateChannel,
 )
 from pydantic import BaseModel
-
 
 # =============================================================================
 # Pydantic Models for Custom Schemas
@@ -39,8 +38,8 @@ class CustomStatus(BaseModel):
     device_id: str
     state: str
     battery: float
-    temperatures: List[float]
-    events: List[dict]  # Use dict to avoid $ref in JSON schema
+    temperatures: list[float]
+    events: list[dict]  # Use dict to avoid $ref in JSON schema
 
 
 # =============================================================================
@@ -48,9 +47,22 @@ class CustomStatus(BaseModel):
 # =============================================================================
 
 
-def now_sec_nsec() -> Dict[str, int]:
+def now_sec_nsec() -> dict[str, int]:
     ts = time.time_ns()
     return {"sec": ts // 1_000_000_000, "nsec": ts % 1_000_000_000}
+
+
+def timestamp_from_seconds(seconds: float) -> schemas.Timestamp:
+    """Convert seconds to Foxglove Timestamp."""
+    sec = int(seconds)
+    nsec = int((seconds - sec) * 1_000_000_000)
+    return schemas.Timestamp(sec=sec, nsec=nsec)
+
+
+def timestamp_now() -> schemas.Timestamp:
+    """Get current timestamp as Foxglove Timestamp."""
+    ts = time.time_ns()
+    return schemas.Timestamp(sec=ts // 1_000_000_000, nsec=ts % 1_000_000_000)
 
 
 def quat_from_yaw(yaw: float) -> schemas.Quaternion:
@@ -64,18 +76,18 @@ def quat_from_yaw(yaw: float) -> schemas.Quaternion:
     )
 
 
-def timestamp_now() -> schemas.Timestamp:
-    """Get current timestamp as Foxglove Timestamp."""
-    ts = time.time_ns()
-    return schemas.Timestamp(sec=ts // 1_000_000_000, nsec=ts % 1_000_000_000)
-
-
 # =============================================================================
 # Message Builders
 # =============================================================================
 
 
-def encode_image_rgb(width: int, height: int, t: float) -> schemas.RawImage:
+def encode_image_rgb(
+    width: int,
+    height: int,
+    t: float,
+    use_sim_time: bool = False,
+    sim_time_offset: float = 0.0,
+) -> schemas.RawImage:
     """Build a RawImage with gradient pattern."""
     data = bytearray()
     for y in range(height):
@@ -84,8 +96,9 @@ def encode_image_rgb(width: int, height: int, t: float) -> schemas.RawImage:
             g = int((y / max(1, height - 1)) * 255)
             b = int(((math.sin(t + x * 0.1) + 1.0) * 0.5) * 255)
             data.extend((r, g, b))
+    timestamp = timestamp_from_seconds(t) if use_sim_time else timestamp_now()
     return schemas.RawImage(
-        timestamp=timestamp_now(),
+        timestamp=timestamp,
         frame_id="camera",
         height=height,
         width=width,
@@ -95,14 +108,17 @@ def encode_image_rgb(width: int, height: int, t: float) -> schemas.RawImage:
     )
 
 
-def build_camera_calibration(width: int, height: int) -> schemas.CameraCalibration:
+def build_camera_calibration(
+    width: int, height: int, use_sim_time: bool = False, sim_time: float = 0.0
+) -> schemas.CameraCalibration:
     """Build CameraCalibration for the camera."""
     # Simple pinhole camera model
     fx = fy = max(width, height)  # focal length in pixels
     cx = width / 2.0  # principal point x
     cy = height / 2.0  # principal point y
+    timestamp = timestamp_from_seconds(sim_time) if use_sim_time else timestamp_now()
     return schemas.CameraCalibration(
-        timestamp=timestamp_now(),
+        timestamp=timestamp,
         frame_id="camera_link",
         height=height,
         width=width,
@@ -114,13 +130,14 @@ def build_camera_calibration(width: int, height: int) -> schemas.CameraCalibrati
     )
 
 
-def build_scene_update(t: float) -> schemas.SceneUpdate:
+def build_scene_update(t: float, use_sim_time: bool = False) -> schemas.SceneUpdate:
     """Build a SceneUpdate with animated cube, sphere, and lines."""
     yaw = t * 0.5
+    timestamp = timestamp_from_seconds(t) if use_sim_time else timestamp_now()
     return schemas.SceneUpdate(
         entities=[
             schemas.SceneEntity(
-                timestamp=timestamp_now(),
+                timestamp=timestamp,
                 frame_id="world",
                 id="demo_objects",
                 cubes=[
@@ -164,7 +181,7 @@ def build_scene_update(t: float) -> schemas.SceneUpdate:
     )
 
 
-def build_point_cloud(t: float) -> schemas.PointCloud:
+def build_point_cloud(t: float, use_sim_time: bool = False) -> schemas.PointCloud:
     """Build a PointCloud with animated ring pattern."""
     import struct
 
@@ -204,8 +221,9 @@ def build_point_cloud(t: float) -> schemas.PointCloud:
         z = 0.3 * math.sin(t + i * 0.2)
         data.extend(struct.pack("<7f", x, y, z, 0.1, 0.8, 1.0, 1.0))
 
+    timestamp = timestamp_from_seconds(t) if use_sim_time else timestamp_now()
     return schemas.PointCloud(
-        timestamp=timestamp_now(),
+        timestamp=timestamp,
         frame_id="world",
         pose=schemas.Pose(
             position=schemas.Vector3(x=0.0, y=0.0, z=0.0),
@@ -217,13 +235,16 @@ def build_point_cloud(t: float) -> schemas.PointCloud:
     )
 
 
-def build_frame_transforms(t: float) -> schemas.FrameTransforms:
+def build_frame_transforms(
+    t: float, use_sim_time: bool = False
+) -> schemas.FrameTransforms:
     """Build FrameTransforms defining robot and camera poses."""
+    timestamp = timestamp_from_seconds(t) if use_sim_time else timestamp_now()
     return schemas.FrameTransforms(
         transforms=[
             # Animated: world -> robot
             schemas.FrameTransform(
-                timestamp=timestamp_now(),
+                timestamp=timestamp,
                 parent_frame_id="world",
                 child_frame_id="robot",
                 translation=schemas.Vector3(
@@ -235,7 +256,7 @@ def build_frame_transforms(t: float) -> schemas.FrameTransforms:
             ),
             # Fixed: robot -> camera_link (mounted on front of robot)
             schemas.FrameTransform(
-                timestamp=timestamp_now(),
+                timestamp=timestamp,
                 parent_frame_id="robot",
                 child_frame_id="camera_link",
                 translation=schemas.Vector3(x=0.3, y=0.0, z=0.1),
@@ -273,11 +294,12 @@ def build_custom_status(t: float) -> CustomStatus:
     )
 
 
-def build_log_message(tick: int) -> schemas.Log:
+def build_log_message(tick: int, t: float, use_sim_time: bool = False) -> schemas.Log:
     """Build a Log message."""
     level = schemas.LogLevel.Info if tick % 5 else schemas.LogLevel.Warning
+    timestamp = timestamp_from_seconds(t) if use_sim_time else timestamp_now()
     return schemas.Log(
-        timestamp=timestamp_now(),
+        timestamp=timestamp,
         level=level,
         name="demo",
         message=f"publish tick {tick}",
@@ -289,9 +311,9 @@ def build_log_message(tick: int) -> schemas.Log:
 # =============================================================================
 
 
-def setup_channels() -> Dict[str, foxglove.Channel]:
+def setup_channels() -> dict[str, foxglove.Channel]:
     """Set up all Foxglove channels with their schemas."""
-    channels: Dict[str, foxglove.Channel] = {}
+    channels: dict[str, foxglove.Channel] = {}
 
     # Channels with Pydantic-derived JSON schemas
     channels["plot"] = foxglove.Channel(
@@ -315,12 +337,67 @@ def setup_channels() -> Dict[str, foxglove.Channel]:
 
 
 # =============================================================================
-# Main
+# Message Generation Helpers
 # =============================================================================
 
 
-def run_loop(channels: Dict[str, foxglove.Channel], rate_hz: float) -> None:
-    """Main publish loop."""
+@dataclass
+class MessageBatch:
+    """Container for all messages at a single timestep."""
+
+    t: float
+    timestamp_ns: int
+    plot: PlotSample
+    custom: CustomStatus
+    transforms: schemas.FrameTransforms
+    scene: schemas.SceneUpdate
+    point_cloud: schemas.PointCloud
+    image: schemas.RawImage
+    camera_info: schemas.CameraCalibration
+    log: schemas.Log
+
+
+def generate_message_batch(
+    t: float, tick: int, use_sim_time: bool = False
+) -> MessageBatch:
+    """Generate all messages for a single timestep."""
+    timestamp_ns = int(t * 1_000_000_000) if use_sim_time else time.time_ns()
+
+    return MessageBatch(
+        t=t,
+        timestamp_ns=timestamp_ns,
+        plot=build_plot_sample(t),
+        custom=build_custom_status(t),
+        transforms=build_frame_transforms(t, use_sim_time),
+        scene=build_scene_update(t, use_sim_time),
+        point_cloud=build_point_cloud(t, use_sim_time),
+        image=encode_image_rgb(160, 120, t, use_sim_time),
+        camera_info=build_camera_calibration(160, 120, use_sim_time, t),
+        log=build_log_message(tick, t, use_sim_time),
+    )
+
+
+def publish_batch(channels: dict[str, foxglove.Channel], batch: MessageBatch) -> None:
+    """Publish a batch of messages to all channels."""
+    channels["plot"].log(batch.plot.model_dump(), log_time=batch.timestamp_ns)
+    channels["custom"].log(batch.custom.model_dump(), log_time=batch.timestamp_ns)
+    channels["tf"].log(batch.transforms, log_time=batch.timestamp_ns)
+    channels["scene"].log(batch.scene, log_time=batch.timestamp_ns)
+    channels["point_cloud"].log(batch.point_cloud, log_time=batch.timestamp_ns)
+    channels["image"].log(batch.image, log_time=batch.timestamp_ns)
+    channels["camera_info"].log(batch.camera_info, log_time=batch.timestamp_ns)
+    channels["log"].log(batch.log, log_time=batch.timestamp_ns)
+
+
+# =============================================================================
+# Mode Implementations
+# =============================================================================
+
+
+def run_live_mode(
+    channels: dict[str, foxglove.Channel], rate_hz: float, duration: float | None
+) -> None:
+    """Run live visualization mode - publishes messages as they are created."""
     start = time.time()
     tick = 0
     period = 1.0 / max(1e-3, rate_hz)
@@ -328,39 +405,13 @@ def run_loop(channels: Dict[str, foxglove.Channel], rate_hz: float) -> None:
     try:
         while True:
             t = time.time() - start
-            timestamp_ns = time.time_ns()
 
-            # Publish plot sample (Pydantic model)
-            plot_msg = build_plot_sample(t)
-            channels["plot"].log(plot_msg.model_dump(), log_time=timestamp_ns)
+            if duration is not None and t >= duration:
+                print(f"\nReached duration limit of {duration}s")
+                break
 
-            # Publish custom status (Pydantic model)
-            custom_msg = build_custom_status(t)
-            channels["custom"].log(custom_msg.model_dump(), log_time=timestamp_ns)
-
-            # Publish frame transforms (for 3D coordinate frames)
-            transforms_msg = build_frame_transforms(t)
-            channels["tf"].log(transforms_msg, log_time=timestamp_ns)
-
-            # Publish scene update (3D primitives)
-            scene_msg = build_scene_update(t)
-            channels["scene"].log(scene_msg, log_time=timestamp_ns)
-
-            # Publish point cloud
-            point_cloud_msg = build_point_cloud(t)
-            channels["point_cloud"].log(point_cloud_msg, log_time=timestamp_ns)
-
-            # Publish image
-            image_msg = encode_image_rgb(160, 120, t)
-            channels["image"].log(image_msg, log_time=timestamp_ns)
-
-            # Publish camera calibration (matches the image)
-            camera_info_msg = build_camera_calibration(160, 120)
-            channels["camera_info"].log(camera_info_msg, log_time=timestamp_ns)
-
-            # Publish log message
-            log_msg = build_log_message(tick)
-            channels["log"].log(log_msg, log_time=timestamp_ns)
+            batch = generate_message_batch(t, tick, use_sim_time=False)
+            publish_batch(channels, batch)
 
             tick += 1
             time.sleep(period)
@@ -369,30 +420,136 @@ def run_loop(channels: Dict[str, foxglove.Channel], rate_hz: float) -> None:
         print("\nShutting down...")
 
 
-def run(host: str, port: int, rate_hz: float, mcap_path: str | None) -> None:
-    # Start the WebSocket server
-    server = foxglove.start_server(host=host, port=port, name="foxglove-viz-demo")
-    print(f"Foxglove server started at ws://{host}:{port}")
+def run_batch_mode(
+    channels: dict[str, foxglove.Channel], rate_hz: float, duration: float
+) -> None:
+    """Run batch mode - compute all messages first, then publish all at once with sim timestamps."""
+    print(f"Computing {duration}s of data at {rate_hz}Hz...")
+
+    period = 1.0 / max(1e-3, rate_hz)
+    num_frames = int(duration * rate_hz)
+
+    # Pre-compute all messages
+    batches: list[MessageBatch] = []
+    for tick in range(num_frames):
+        t = tick * period
+        batch = generate_message_batch(t, tick, use_sim_time=True)
+        batches.append(batch)
+
+    print(f"Computed {len(batches)} message batches")
+    print(f"Publishing all messages now...")
+
+    # Publish all messages at once (WebSocket can handle rapid publishes)
+    for batch in batches:
+        publish_batch(channels, batch)
+
+    print(f"Published all {len(batches)} batches")
+
+
+def run_file_mode(mcap_path: str, rate_hz: float, duration: float) -> None:
+    """Run file mode - record to MCAP file with artificial timestamps (fast generation)."""
+    if duration is None:
+        print("Error: --duration is required for file mode")
+        return
 
     # Create all channels (must be created before MCAP writer to be recorded)
     channels = setup_channels()
 
-    if mcap_path:
-        # Use context manager for MCAP recording (auto-closes on exit)
-        with foxglove.open_mcap(mcap_path, allow_overwrite=True) as mcap_writer:
-            print(f"Recording to {mcap_path}")
-            run_loop(channels, rate_hz)
-        print(f"MCAP recording saved to {mcap_path}")
-    else:
-        run_loop(channels, rate_hz)
+    with foxglove.open_mcap(mcap_path, allow_overwrite=True) as mcap_writer:
+        print(f"Generating {duration}s of data at {rate_hz}Hz...")
 
-    server.stop()
+        period = 1.0 / max(1e-3, rate_hz)
+        num_frames = int(duration * rate_hz)
+
+        # Generate and write all messages as fast as possible with artificial timestamps
+        for tick in range(num_frames):
+            t = tick * period
+            batch = generate_message_batch(t, tick, use_sim_time=True)
+            publish_batch(channels, batch)
+
+            if (tick + 1) % 100 == 0 or tick == num_frames - 1:
+                print(f"  Generated {tick + 1}/{num_frames} frames...", end="\r")
+
+        print(f"\nGenerated {num_frames} frames")
+
+    print(f"MCAP recording saved to {mcap_path}")
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+
+def run(
+    mode: str,
+    host: str,
+    port: int,
+    rate_hz: float,
+    duration: float | None,
+    mcap_path: str | None,
+) -> None:
+    if mode == "live":
+        # Start the WebSocket server
+        server = foxglove.start_server(host=host, port=port, name="foxglove-viz-demo")
+        print(f"Foxglove server started at ws://{host}:{port}")
+
+        channels = setup_channels()
+        run_live_mode(channels, rate_hz, duration)
+        server.stop()
+
+    elif mode == "batch":
+        if duration is None:
+            print("Error: --duration is required for batch mode")
+            return
+
+        # Start the WebSocket server
+        server = foxglove.start_server(host=host, port=port, name="foxglove-viz-demo")
+        print(f"Foxglove server started at ws://{host}:{port}")
+
+        channels = setup_channels()
+        run_batch_mode(channels, rate_hz, duration)
+
+        # Keep server running so user can view the data
+        print("\nData published. Press Ctrl+C to stop the server.")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+        server.stop()
+
+    elif mode == "file":
+        if mcap_path is None:
+            print("Error: --mcap is required for file mode")
+            return
+        if duration is None:
+            print("Error: --duration is required for file mode")
+            return
+        run_file_mode(mcap_path, rate_hz, duration)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Foxglove visualization demo server using pydantic schemas"
+    parser = argparse.ArgumentParser(description="Foxglove visualization demo server")
+
+    # Mode selection - mutually exclusive
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument(
+        "--live",
+        action="store_true",
+        help="Live visualization mode - publish messages as they are created",
     )
+    mode_group.add_argument(
+        "--batch",
+        action="store_true",
+        help="Batch mode - compute all messages first, then publish with sim timestamps",
+    )
+    mode_group.add_argument(
+        "--file",
+        action="store_true",
+        help="File mode - record to MCAP file",
+    )
+
+    # Common options
     parser.add_argument(
         "--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)"
     )
@@ -403,22 +560,39 @@ def parse_args() -> argparse.Namespace:
         "--rate", type=float, default=10.0, help="Publish rate in Hz (default: 10)"
     )
     parser.add_argument(
-        "--mcap",
-        default="foxglove-demo.mcap",
-        help="MCAP output path (default: foxglove-demo.mcap, use --no-mcap to disable)",
+        "--duration",
+        type=float,
+        default=None,
+        help="Duration in seconds (required for batch mode, optional for others)",
     )
     parser.add_argument(
-        "--no-mcap",
-        action="store_true",
-        help="Disable MCAP recording",
+        "--mcap",
+        default="foxglove-demo.mcap",
+        help="MCAP output path for file mode (default: foxglove-demo.mcap)",
     )
+
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    mcap_path = None if args.no_mcap else args.mcap
-    run(args.host, args.port, args.rate, mcap_path)
+
+    # Determine mode
+    if args.live:
+        mode = "live"
+    elif args.batch:
+        mode = "batch"
+    else:
+        mode = "file"
+
+    run(
+        mode=mode,
+        host=args.host,
+        port=args.port,
+        rate_hz=args.rate,
+        duration=args.duration,
+        mcap_path=args.mcap if mode == "file" else None,
+    )
 
 
 if __name__ == "__main__":
