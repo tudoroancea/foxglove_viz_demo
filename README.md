@@ -10,6 +10,8 @@ Quick start
    uv run python main.py --rate 10
 3) Open Foxglove Studio and connect:
    ws://localhost:8765
+4) Optional: override MCAP output path:
+   uv run python main.py --mcap demo.mcap
 
 Suggested panels in Foxglove Studio
 - Plot: chart `plot/sample.sine`, `plot/sample.cosine`, `plot/sample.saw`
@@ -21,3 +23,5 @@ Suggested panels in Foxglove Studio
 Notes
 - The demo uses JSON encoding with the Foxglove WebSocket server.
 - `plot/sample` and `custom/status` include explicit JSON schemas.
+- By default, the demo writes `foxglove-demo.mcap` in the project root.
+- Pass `--no-mcap` to disable MCAP recording.

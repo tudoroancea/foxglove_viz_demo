@@ -1,12 +1,14 @@
 import argparse
 import asyncio
 import base64
+from contextlib import ExitStack
 import json
 import math
 import random
 import time
 from typing import Any, Dict, List
 
+import foxglove
 from foxglove_websocket.server import FoxgloveServer
 
 
@@ -198,7 +200,22 @@ async def maybe_await(result: Any) -> Any:
     return result
 
 
-async def run(host: str, port: int, rate_hz: float) -> None:
+def build_mcap_channels() -> Dict[str, foxglove.Channel]:
+    channels: Dict[str, foxglove.Channel] = {}
+    channels["plot"] = foxglove.Channel("plot/sample", schema=PLOT_SCHEMA)
+    channels["custom"] = foxglove.Channel("custom/status", schema=CUSTOM_SCHEMA)
+    channels["pose"] = foxglove.Channel("viz/pose", message_encoding="json")
+    channels["transform"] = foxglove.Channel("viz/transform", message_encoding="json")
+    channels["scene"] = foxglove.Channel("viz/scene", message_encoding="json")
+    channels["point_cloud"] = foxglove.Channel(
+        "viz/point_cloud", message_encoding="json"
+    )
+    channels["image"] = foxglove.Channel("viz/image", message_encoding="json")
+    channels["log"] = foxglove.Channel("system/log", message_encoding="json")
+    return channels
+
+
+async def run(host: str, port: int, rate_hz: float, mcap_path: str | None) -> None:
     server = FoxgloveServer(host, port, "foxglove-viz-demo")
     await maybe_await(server.start())
 
@@ -286,6 +303,12 @@ async def run(host: str, port: int, rate_hz: float) -> None:
         )
     )
 
+    mcap_stack = ExitStack()
+    mcap_channels: Dict[str, foxglove.Channel] | None = None
+    if mcap_path:
+        mcap_stack.enter_context(foxglove.open_mcap(mcap_path))
+        mcap_channels = build_mcap_channels()
+
     start = time.time()
     tick = 0
     period = 1.0 / max(1e-3, rate_hz)
@@ -301,6 +324,8 @@ async def run(host: str, port: int, rate_hz: float) -> None:
                     channels["plot"], timestamp_ns, json.dumps(plot_msg).encode()
                 )
             )
+            if mcap_channels:
+                mcap_channels["plot"].log(plot_msg, log_time=timestamp_ns)
 
             custom_msg = build_custom_status(t)
             await maybe_await(
@@ -308,6 +333,8 @@ async def run(host: str, port: int, rate_hz: float) -> None:
                     channels["custom"], timestamp_ns, json.dumps(custom_msg).encode()
                 )
             )
+            if mcap_channels:
+                mcap_channels["custom"].log(custom_msg, log_time=timestamp_ns)
 
             pose_msg = build_pose(t)
             await maybe_await(
@@ -315,6 +342,8 @@ async def run(host: str, port: int, rate_hz: float) -> None:
                     channels["pose"], timestamp_ns, json.dumps(pose_msg).encode()
                 )
             )
+            if mcap_channels:
+                mcap_channels["pose"].log(pose_msg, log_time=timestamp_ns)
 
             transform_msg = build_transform(t)
             await maybe_await(
@@ -324,6 +353,8 @@ async def run(host: str, port: int, rate_hz: float) -> None:
                     json.dumps(transform_msg).encode(),
                 )
             )
+            if mcap_channels:
+                mcap_channels["transform"].log(transform_msg, log_time=timestamp_ns)
 
             scene_msg = build_scene_update(t)
             await maybe_await(
@@ -331,6 +362,8 @@ async def run(host: str, port: int, rate_hz: float) -> None:
                     channels["scene"], timestamp_ns, json.dumps(scene_msg).encode()
                 )
             )
+            if mcap_channels:
+                mcap_channels["scene"].log(scene_msg, log_time=timestamp_ns)
 
             point_cloud_msg = build_point_cloud(t)
             await maybe_await(
@@ -340,6 +373,8 @@ async def run(host: str, port: int, rate_hz: float) -> None:
                     json.dumps(point_cloud_msg).encode(),
                 )
             )
+            if mcap_channels:
+                mcap_channels["point_cloud"].log(point_cloud_msg, log_time=timestamp_ns)
 
             image_msg = encode_image_rgb(160, 120, t)
             await maybe_await(
@@ -347,6 +382,8 @@ async def run(host: str, port: int, rate_hz: float) -> None:
                     channels["image"], timestamp_ns, json.dumps(image_msg).encode()
                 )
             )
+            if mcap_channels:
+                mcap_channels["image"].log(image_msg, log_time=timestamp_ns)
 
             log_msg = {
                 "timestamp": now_sec_nsec(),
@@ -359,6 +396,8 @@ async def run(host: str, port: int, rate_hz: float) -> None:
                     channels["log"], timestamp_ns, json.dumps(log_msg).encode()
                 )
             )
+            if mcap_channels:
+                mcap_channels["log"].log(log_msg, log_time=timestamp_ns)
 
             tick += 1
             await asyncio.sleep(period)
@@ -366,6 +405,7 @@ async def run(host: str, port: int, rate_hz: float) -> None:
         stop = getattr(server, "stop", None) or getattr(server, "close", None)
         if stop is not None:
             await maybe_await(stop())
+        mcap_stack.close()
 
 
 def parse_args() -> argparse.Namespace:
@@ -373,12 +413,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0", help="Bind address")
     parser.add_argument("--port", type=int, default=8765, help="WebSocket port")
     parser.add_argument("--rate", type=float, default=10.0, help="Publish rate (Hz)")
+    parser.add_argument(
+        "--mcap",
+        default="foxglove-demo.mcap",
+        help="MCAP output path (set --no-mcap to disable)",
+    )
+    parser.add_argument(
+        "--no-mcap",
+        action="store_true",
+        help="Disable MCAP recording",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    asyncio.run(run(args.host, args.port, args.rate))
+    mcap_path = None if args.no_mcap else (args.mcap or None)
+    asyncio.run(run(args.host, args.port, args.rate, mcap_path))
 
 
 if __name__ == "__main__":
