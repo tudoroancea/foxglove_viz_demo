@@ -1,7 +1,9 @@
 [project]
 name = "foxglove-viz-demo"
 version = "0.1.0"
-description = "Add your description here"
+description = "Foxglove WebSocket demo with rich visualization streams"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "foxglove-websocket>=0.1.0",
+]
